@@ -8,6 +8,7 @@
   - [Practical Progress](#practical-progress)
   - [Issues](#issues)
     - [Issue1: Compile Error E0283 In tests, `Type annotations needed for u64.pack() in Cell capacity`](#issue1-compile-error-e0283-in-tests-type-annotations-needed-for-u64pack-in-cell-capacity)
+      - [Issue 1 fix](#issue-1-fix)
     - [Issue 2: Insufficient CKB for testnet deployment](#issue-2-insufficient-ckb-for-testnet-deployment)
       - [Issue 2 fix](#issue-2-fix)
 
@@ -40,6 +41,7 @@
 - the `.capacity(1000u64.pack())` script generating type annotation error hence causing ambiguity when settling the cell output capacity. I think this could have been an issue due to the recent update where the compiler can no longer impact which type is intended when calling `1000u64.pack()`
 <details>
 <summary>Expand compilation results</summary>
+
 ```bash
 
    --> tests/src/test_sudt.rs:274:14
@@ -66,6 +68,9 @@ help: consider removing this method call, as the receiver has type `u64` and `u6
      |
  274 -             .capacity(1000u64.pack())
  274 +             .capacity(1000u64)
+
+
+```
 
 </details>
 
