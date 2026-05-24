@@ -1,0 +1,11 @@
+[[cells]]
+name = "sudt"
+enable_type_id = true
+
+  [cells.location]
+  file = "/Users/felabs/felabs/CKBuilder/week4/sudt-script/build/release/sudt"
+
+[lock]
+code_hash = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
+args = "0x5247b3c7a74561362b7a471270d5d575c594926d"
+hash_type = "type"
