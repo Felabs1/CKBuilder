@@ -1,0 +1,13 @@
+{
+  "cell_recipes": [
+    {
+      "name": "sudt",
+      "tx_hash": "0x2dba6843b1b670878de2cea9b431027f558be93bf09529e00a14e3f057a3ea3d",
+      "index": 0,
+      "occupied_capacity": 3919200000000,
+      "data_hash": "0xcae94e37ffb9d722d380bad1768017c82cdf08a51de09b4b63af6e73d73ba131",
+      "type_id": "0x631126e31b1bdd3b73e9c03696a11157e89d356f9840501fb1c24b84477b4b59"
+    }
+  ],
+  "dep_group_recipes": []
+}
