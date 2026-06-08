@@ -10,9 +10,43 @@ import { cccClient } from "./ccc-client";
 export const SUDT_ARGS =
   "0x2bac47f8af8f8e61dcfed0ee9300edf42f45c663f8ef7f6a6c51ee02d5e5ebde00000000";
 const XUDT_CODE_HASH =
-  "0x20965b668e0476d68a090425fd663907587f66c35f8bb2ee5172a6dc2666a37e";
+  "0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb";
 // Remove MY_CONTRACT_CODE_HASH - it's not a contract hash
 const INDEXER_URL = "https://testnet.ckb.dev/indexer";
+
+const toRpcScript = (s: any) => ({
+  code_hash: s.codeHash,
+  hash_type: s.hashType,
+  args: s.args,
+});
+
+async function queryIndexer(searchKey: any) {
+  const res = await fetch(INDEXER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "get_cells",
+      params: [searchKey, "asc", "0x3E8"],
+    }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.result?.objects || [];
+}
+
+function decodeUdtAmount(hex: string): bigint {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const bytes = clean.match(/.{1,2}/g)?.map((b) => parseInt(b, 16)) || [];
+  let amount = 0n;
+  for (let i = 0; i < 16 && i < bytes.length; i++) {
+    if (!isNaN(bytes[i])) {
+      amount += BigInt(bytes[i]) << (BigInt(i) * 8n);
+    }
+  }
+  return amount;
+}
 
 // Query SUDT balance for a given address
 export async function getSUDTBalance(address: string): Promise<bigint> {
@@ -74,7 +108,6 @@ export async function transferSUDT(
     outputsData: [ccc.numLeToBytes(amount, 16)],
   });
 
-  await tx.addCellDepsOfKnownScripts(signer.client, ccc.KnownScript.XUdt);
   await tx.completeInputsByUdt(signer, sudtType);
 
   const inputUdtBal = await tx.getInputsUdtBalance(signer.client, sudtType);
@@ -93,6 +126,165 @@ export async function transferSUDT(
   await tx.completeFeeBy(signer, 1000);
 
   return await signer.sendTransaction(tx);
+}
+
+export async function transferSUDTWithJoyID(
+  joyidAddress: string,
+  recipientAddress: string,
+  amount: string,
+): Promise<string> {
+  const senderAddr = await ccc.Address.fromString(joyidAddress, cccClient);
+  const recipientAddr = await ccc.Address.fromString(
+    recipientAddress,
+    cccClient,
+  );
+  const senderLock = senderAddr.script;
+  const recipientLock = recipientAddr.script;
+
+  const amt = BigInt(amount);
+  const MIN_CAP = 150n * 100_000_000n;
+  const FEE_BUFFER = 100_000_000n;
+
+  const sudtTypeRpc = {
+    code_hash: XUDT_CODE_HASH,
+    hash_type: "type",
+    args: SUDT_ARGS,
+  };
+
+  // Query by lock first (more reliable)
+  const senderCells = await queryIndexer({
+    script: toRpcScript(senderLock),
+    script_type: "lock",
+  });
+
+  let udtSum = 0n;
+  let totalCap = 0n;
+  const inputs: any[] = [];
+
+  for (const cell of senderCells) {
+    const cellOutput = cell.output;
+    const outputData = cell.output_data;
+    const outPoint = cell.out_point;
+
+    if (!outPoint) continue;
+
+    const cellType = cellOutput.type;
+    if (!cellType) continue;
+
+    if (
+      cellType.code_hash === XUDT_CODE_HASH &&
+      cellType.hash_type === "type" &&
+      cellType.args === SUDT_ARGS
+    ) {
+      // 🔑 FIX: Use helper that handles hex string properly
+      const cellAmount = decodeUdtAmount(outputData);
+
+      udtSum += cellAmount;
+      totalCap += BigInt(cellOutput.capacity);
+
+      inputs.push({
+        previousOutput: {
+          txHash: outPoint.tx_hash,
+          index: parseInt(outPoint.index),
+        },
+      });
+
+      if (udtSum >= amt) break;
+    }
+  }
+
+  if (udtSum < amt) {
+    throw new Error(
+      `Insufficient SUDT balance. Found: ${udtSum}, Needed: ${amt}`,
+    );
+  }
+
+  const changeAmt = udtSum - amt;
+  const requiredUdtCap = changeAmt > 0n ? MIN_CAP * 2n : MIN_CAP;
+  const requiredCap = requiredUdtCap + FEE_BUFFER;
+
+  if (totalCap < requiredCap) {
+    const ckbCells = await queryIndexer({
+      script: toRpcScript(senderLock),
+      script_type: "lock",
+    });
+
+    for (const cell of ckbCells) {
+      if (totalCap >= requiredCap) break;
+      const outPoint = cell.out_point;
+      if (!outPoint) continue;
+      if (cell.output?.type) continue;
+
+      const alreadyUsed = inputs.some(
+        (i) => i.previousOutput.txHash === outPoint.tx_hash,
+      );
+      if (!alreadyUsed) {
+        totalCap += BigInt(cell.output.capacity);
+        inputs.push({
+          previousOutput: {
+            txHash: outPoint.tx_hash,
+            index: parseInt(outPoint.index),
+          },
+        });
+      }
+    }
+  }
+
+  if (totalCap < requiredCap) {
+    throw new Error(
+      "Insufficient pure CKB capacity. Need more CKB in JoyID wallet.",
+    );
+  }
+
+  // Build outputs
+  const outputs: any[] = [
+    {
+      lock: recipientLock,
+      type: { codeHash: XUDT_CODE_HASH, hashType: "type", args: SUDT_ARGS },
+      capacity: MIN_CAP,
+    },
+  ];
+  const outputsData: string[] = [ccc.numLeToBytes(amt, 16)];
+
+  if (changeAmt > 0n) {
+    outputs.push({
+      lock: senderLock,
+      type: { codeHash: XUDT_CODE_HASH, hashType: "type", args: SUDT_ARGS },
+      capacity: MIN_CAP,
+    });
+    outputsData.push(ccc.numLeToBytes(changeAmt, 16));
+  }
+
+  const totalOutputCap = outputs.reduce(
+    (sum, o) => sum + BigInt(o.capacity),
+    0n,
+  );
+  const ckbChange = totalCap - totalOutputCap - FEE_BUFFER;
+  outputs.push({ lock: senderLock, capacity: ckbChange });
+  outputsData.push("0x");
+
+  const tx = ccc.Transaction.from({ inputs, outputs, outputsData });
+
+  await tx.addCellDepsOfKnownScripts(cccClient, ccc.KnownScript.XUdt);
+  if (
+    senderLock.codeHash ===
+    "0xd23761b364210735c19c60561d213fb3beae2fd6172743719eff6920e020baac"
+  ) {
+    await tx.addCellDepsOfKnownScripts(cccClient, ccc.KnownScript.OmniLock);
+  }
+
+  const dummy = new ccc.SignerCkbPrivateKey(cccClient, "0x" + "00".repeat(32));
+  await tx.completeFeeBy(dummy, 1000);
+
+  const txHex = tx.toString();
+
+  const signedTxHex = await signTransaction({
+    transaction: txHex,
+    address: joyidAddress,
+    redirectURL: window.location.origin,
+  } as any);
+
+  return await cccClient.sendTransaction(signedTxHex);
 }
 
 export async function recoverFromPrivateKey(privateKey: string) {
@@ -148,164 +340,6 @@ export async function mintSUDT(
   return await signer.sendTransaction(tx);
 }
 
-export async function transferSUDTWithJoyID(
-  joyidAddress: string,
-  recipientAddress: string,
-  amount: string,
-): Promise<string> {
-  const senderAddr = await ccc.Address.fromString(joyidAddress, cccClient);
-  const recipientAddr = await ccc.Address.fromString(
-    recipientAddress,
-    cccClient,
-  );
-  const senderLock = senderAddr.script;
-  const recipientLock = recipientAddr.script;
-
-  const amt = BigInt(amount);
-  const MIN_CAP = 150n * 100_000_000n;
-
-  const sudtType = await ccc.Script.fromKnownScript(
-    cccClient,
-    ccc.KnownScript.XUdt,
-    SUDT_ARGS,
-  );
-
-  let udtSum = 0n;
-  let totalCap = 0n;
-  const inputs: any[] = [];
-
-  const udtCollector = cccClient.findCellsByType(sudtType, true);
-  for await (const cell of udtCollector) {
-    // ✅ THE FIX: skip any cell the indexer returned without an outPoint
-    if (!cell.outPoint) continue;
-
-    if (cell.cellOutput.lock.args === senderLock.args) {
-      const cellAmount = ccc.numLeFromBytes(cell.outputData);
-      udtSum += cellAmount;
-      totalCap += cell.cellOutput.capacity;
-      inputs.push({
-        previousOutput: {
-          txHash: cell.outPoint.txHash,
-          index: cell.outPoint.index,
-        },
-      });
-      if (udtSum >= amt) break;
-    }
-  }
-
-  if (udtSum < amt)
-    throw new Error(
-      `Insufficient SUDT balance. Found: ${udtSum}, Needed: ${amt}`,
-    );
-
-  const changeAmt = udtSum - amt;
-  const requiredUdtCap = changeAmt > 0n ? MIN_CAP * 2n : MIN_CAP;
-  const requiredCap = requiredUdtCap + 85n * 100_000_000n + 100000n;
-
-  if (totalCap < requiredCap) {
-    const ckbCollector = cccClient.findCellsByLock(senderLock, true);
-    for await (const cell of ckbCollector) {
-      if (totalCap >= requiredCap) break;
-      // ✅ THE FIX: same guard here
-      if (!cell.outPoint) continue;
-      if (cell.cellOutput.type || cell.outputData !== "0x") continue;
-
-      const alreadyUsed = inputs.some(
-        (i) =>
-          i.previousOutput.txHash === cell.outPoint!.txHash &&
-          i.previousOutput.index === cell.outPoint!.index,
-      );
-      if (!alreadyUsed) {
-        totalCap += cell.cellOutput.capacity;
-        inputs.push({
-          previousOutput: {
-            txHash: cell.outPoint.txHash,
-            index: cell.outPoint.index,
-          },
-        });
-      }
-    }
-  }
-
-  if (totalCap < requiredCap)
-    throw new Error(
-      "Insufficient pure CKB capacity. Need more CKB in JoyID wallet.",
-    );
-
-  const outputs: any[] = [
-    { lock: recipientLock, type: sudtType, capacity: MIN_CAP },
-  ];
-  const outputsData: string[] = [ccc.hexFrom(ccc.numLeToBytes(amt, 16))];
-
-  if (changeAmt > 0n) {
-    outputs.push({ lock: senderLock, type: sudtType, capacity: MIN_CAP });
-    outputsData.push(ccc.hexFrom(ccc.numLeToBytes(changeAmt, 16)));
-  }
-
-  const totalOutputCapSoFar = outputs.reduce(
-    (sum, o) => sum + BigInt(o.capacity),
-    0n,
-  );
-  const ckbChange = totalCap - totalOutputCapSoFar - 100000n;
-  outputs.push({ lock: senderLock, capacity: ckbChange });
-  outputsData.push("0x");
-
-  const tx = ccc.Transaction.from({
-    inputs,
-    outputs,
-    outputsData,
-    witnesses: inputs.map(() => "0x"),
-    cellDeps: [],
-    headerDeps: [],
-  });
-
-  await tx.addCellDepsOfKnownScripts(cccClient, ccc.KnownScript.XUdt);
-  await tx.addCellDepsOfKnownScripts(cccClient, ccc.KnownScript.OmniLock);
-
-  const rawTx = {
-    version: "0x0",
-    cellDeps: (tx.cellDeps || []).map((dep: any) => ({
-      outPoint: {
-        txHash: dep.outPoint.txHash as string,
-        index: "0x" + BigInt(dep.outPoint.index).toString(16),
-      },
-      depType:
-        dep.depType === "depGroup" || dep.depType === 1 ? "depGroup" : "code",
-    })),
-    headerDeps: [] as string[],
-    inputs: (tx.inputs || []).map((input: any) => ({
-      previousOutput: {
-        txHash: input.previousOutput.txHash as string,
-        index: "0x" + BigInt(input.previousOutput.index).toString(16),
-      },
-      since: "0x0",
-    })),
-    outputs: (tx.outputs || []).map((output: any) => {
-      const formatted: any = {
-        capacity: "0x" + BigInt(output.capacity).toString(16),
-        lock: {
-          codeHash: output.lock.codeHash as string,
-          hashType: output.lock.hashType,
-          args: output.lock.args as string,
-        },
-      };
-      if (output.type) {
-        formatted.type = {
-          codeHash: output.type.codeHash as string,
-          hashType: output.type.hashType,
-          args: output.type.args as string,
-        };
-      }
-      return formatted;
-    }),
-    outputsData,
-    witnesses: inputs.map(() => "0x"),
-  };
-
-  const signed = await signRawTransaction(rawTx as any, joyidAddress);
-  const finalTx = ccc.Transaction.from(signed);
-  return await cccClient.sendTransaction(finalTx);
-}
 // @ts-ignore
 window.recoverFromPrivateKey = recoverFromPrivateKey;
 
