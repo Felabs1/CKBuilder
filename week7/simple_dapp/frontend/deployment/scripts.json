@@ -1,0 +1,21 @@
+{
+  "devnet": {
+    "simple-lock": {
+      "codeHash": "0x919af969d40b996e8c112fae00f04ae41902c1a50581e7004edd4146e0547c3f",
+      "hashType": "data2",
+      "cellDeps": [
+        {
+          "cellDep": {
+            "outPoint": {
+              "txHash": "0x90a6fe47f438a8671fdba067028b9ce98b652766733e28a73edf3dbb1406b761",
+              "index": 0
+            },
+            "depType": "code"
+          }
+        }
+      ]
+    }
+  },
+  "testnet": {},
+  "mainnet": {}
+}
