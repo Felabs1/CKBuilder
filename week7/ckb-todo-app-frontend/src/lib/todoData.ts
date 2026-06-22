@@ -8,6 +8,7 @@ export type TodoItem = {
   text: string;
   status: TodoStatus;
   capacity: ccc.Num;
+  createTxHash?: string;
 };
 
 export function encodeTodoData(text: string, completed: boolean): ccc.Bytes {

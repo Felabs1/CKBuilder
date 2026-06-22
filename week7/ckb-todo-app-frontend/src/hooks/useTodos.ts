@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { ccc } from "@ckb-ccc/connector-react";
 import { TodoItem } from "../lib/todoData";
 import {
+  applyCreateTxHashes,
+  outPointKey,
+  saveCreateTxHash,
+} from "../lib/todoTxStorage";
+import {
   completeTodo,
   createTodo,
   deleteTodo,
@@ -24,7 +29,7 @@ export function useTodos(signer: ccc.Signer | undefined) {
     setLoading(true);
     setError(null);
     try {
-      setTodos(await fetchTodos(signer));
+      setTodos(applyCreateTxHashes(await fetchTodos(signer)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load todos");
     } finally {
@@ -36,7 +41,10 @@ export function useTodos(signer: ccc.Signer | undefined) {
     refresh();
   }, [refresh]);
 
-  const runAction = async (action: () => Promise<string>) => {
+  const runAction = async (
+    action: () => Promise<string>,
+    options?: { recordCreateTx?: boolean },
+  ) => {
     if (!signer) {
       throw new Error("Connect your wallet first");
     }
@@ -44,9 +52,26 @@ export function useTodos(signer: ccc.Signer | undefined) {
     setActionLoading(true);
     setError(null);
     const previousSnapshot = todos;
+    const previousKeys = new Set(
+      previousSnapshot.map((todo) => outPointKey(todo.outPoint)),
+    );
     try {
       const txHash = await action();
-      setTodos(await fetchTodosWithRetry(signer, previousSnapshot));
+      let updated = applyCreateTxHashes(
+        await fetchTodosWithRetry(signer, previousSnapshot),
+      );
+
+      if (options?.recordCreateTx) {
+        updated = updated.map((todo) => {
+          if (previousKeys.has(outPointKey(todo.outPoint))) {
+            return todo;
+          }
+          saveCreateTxHash(todo.outPoint, txHash);
+          return { ...todo, createTxHash: txHash };
+        });
+      }
+
+      setTodos(updated);
       return txHash;
     } catch (err) {
       const message =
@@ -59,7 +84,7 @@ export function useTodos(signer: ccc.Signer | undefined) {
   };
 
   const addTodo = (text: string) =>
-    runAction(() => createTodo(signer!, text));
+    runAction(() => createTodo(signer!, text), { recordCreateTx: true });
 
   const markComplete = (todo: TodoItem) =>
     runAction(() => completeTodo(signer!, todo));

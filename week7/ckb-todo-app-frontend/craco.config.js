@@ -1,6 +1,28 @@
 // craco.config.js
 const webpack = require('webpack');
 
+function excludeSourceMapLoaderForPackages(webpackConfig, packagePattern) {
+    const rules = webpackConfig.module.rules;
+
+    const patchRule = (rule) => {
+        if (
+            rule.loader &&
+            String(rule.loader).includes("source-map-loader")
+        ) {
+            rule.exclude = Array.isArray(rule.exclude)
+                ? [...rule.exclude, packagePattern]
+                : rule.exclude
+                  ? [rule.exclude, packagePattern]
+                  : packagePattern;
+        }
+    };
+
+    rules.forEach((rule) => {
+        patchRule(rule);
+        rule.oneOf?.forEach(patchRule);
+    });
+}
+
 module.exports = {
     webpack: {
         configure: (webpackConfig) => {
@@ -18,6 +40,13 @@ module.exports = {
                 ...webpackConfig.resolve.fallback,
                 "stream": require.resolve("stream-browserify"),
             };
+
+            // Published @nervosnetwork packages ship without src/ files referenced
+            // by their source maps, which spams source-map-loader warnings in CRA.
+            excludeSourceMapLoaderForPackages(
+                webpackConfig,
+                /@nervosnetwork/,
+            );
 
             return webpackConfig;
         },

@@ -4,6 +4,8 @@ import ConnectWallet from "./ConnectWallet";
 import { useTodos } from "../hooks/useTodos";
 import { TodoItem } from "../lib/todoData";
 import { getNetwork } from "../config/contract";
+import { getTxExplorerUrl } from "../utils/explorer";
+import { truncateAddress } from "../utils/stringUtils";
 
 function TodoRow({
   todo,
@@ -19,28 +21,42 @@ function TodoRow({
   const isCompleted = todo.status === "completed";
 
   return (
-    <li className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#2d2d2d] px-4 py-3">
+    <li className="flex items-start gap-3 rounded-lg border border-white/10 bg-[#2d2d2d] px-4 py-3">
       <button
         type="button"
         disabled={disabled || isCompleted}
         onClick={() => onComplete(todo)}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-cyan-500/60 disabled:opacity-40"
+        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-cyan-500/60 disabled:opacity-40"
         aria-label={isCompleted ? "Completed" : "Mark complete"}
       >
         {isCompleted && <span className="text-xs text-cyan-400">✓</span>}
       </button>
-      <span
-        className={`flex-1 break-words text-sm ${
-          isCompleted ? "text-white/50 line-through" : "text-white"
-        }`}
-      >
-        {todo.text}
-      </span>
+      <div className="min-w-0 flex-1">
+        <span
+          className={`block break-words text-sm ${
+            isCompleted ? "text-white/50 line-through" : "text-white"
+          }`}
+        >
+          {todo.text}
+        </span>
+        {todo.createTxHash && (
+          <a
+            href={getTxExplorerUrl(todo.createTxHash)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1 inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 hover:underline"
+            title={todo.createTxHash}
+          >
+            Mint tx {truncateAddress(todo.createTxHash, 10, 8)}
+            <span aria-hidden="true">↗</span>
+          </a>
+        )}
+      </div>
       <button
         type="button"
         disabled={disabled}
         onClick={() => onDelete(todo)}
-        className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
+        className="shrink-0 text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
       >
         Delete
       </button>
